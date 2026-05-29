@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import builtins
 import functools
 import inspect
 import math
@@ -30,11 +31,13 @@ from paddle.utils.decorator_utils import (
     ParamAliasDecorator,
     VariableArgsDecorator,
     expand_decorator,
+    fill_diagonal_inplace_decorator,
     index_add_decorator,
     index_fill_decorator,
     param_one_alias,
     param_two_alias,
     reshape_decorator,
+    tile_decorator,
     variadic_tensor_decorator,
     view_decorator,
 )
@@ -1195,8 +1198,26 @@ def zero_(x: Tensor) -> Tensor:
     return _C_ops.fill_(x, 0.0)
 
 
+@overload
+def fill_diagonal_(
+    x: Tensor,
+    value: float,
+    offset: int = 0,
+    wrap: bool = False,
+    name: str | None = None,
+) -> Tensor: ...
+
+
+@overload
+def fill_diagonal_(
+    x: Tensor,
+    fill_value: float,
+    wrap: bool = False,
+) -> Tensor: ...
+
+
 @dygraph_only
-@param_one_alias(["value", "fill_value"])
+@fill_diagonal_inplace_decorator()
 def fill_diagonal_(
     x: Tensor,
     value: float,
@@ -1231,7 +1252,7 @@ def fill_diagonal_(
             [[1.0, 2.0, 2.0], [2.0, 1.0, 2.0], [2.0, 2.0, 1.0], [2.0, 2.0, 2.0]]
 
             >>> # Use 'fill_value' alias (PyTorch compatible)
-            >>> x.fill_diagonal_(fill_value=0.0)  # type: ignore
+            >>> x.fill_diagonal_(fill_value=0.0)
             >>> print(x.tolist())
             [[0.0, 2.0, 2.0], [2.0, 0.0, 2.0], [2.0, 2.0, 0.0], [2.0, 2.0, 2.0]]
     """
@@ -1809,6 +1830,7 @@ def broadcast_tensors(
         return out
 
 
+@param_two_alias(["x", "input"], ["axes", "dims"])
 def rot90(
     x: Tensor, k: int = 1, axes: Sequence[int] = [0, 1], name: str | None = None
 ) -> Tensor:
@@ -1818,8 +1840,10 @@ def rot90(
     Args:
         x (Tensor): The input Tensor. The data type of the input Tensor x
             should be float16, float32, float64, int32, int64, bool. float16 is only supported on gpu.
+            Alias: ``input``.
         k (int, optional): Direction and number of times to rotate, default value: 1.
         axes (list|tuple, optional): Axes to rotate, dimension must be 2. default value: [0, 1].
+            Alias: ``dims``.
         name (str|None, optional): The default value is None.  Normally there is no need for user to set this property.
             For more information, please refer to :ref:`api_guide_Name` .
 
@@ -3506,6 +3530,7 @@ def squeeze(
         return out
 
 
+@param_two_alias(["x", "input"], ["axis", "dim"])
 @inplace_apis_in_dygraph_only
 def squeeze_(
     x: Tensor, axis: int | Sequence[int] | None = None, name: str | None = None
@@ -3822,10 +3847,6 @@ def unique(
     r"""
     Returns the unique elements of `x` in ascending order.
 
-    .. note::
-        Alias Support: The parameter name ``input`` can be used as an alias for ``x``, and ``dim`` can be used as an alias for ``axis``.
-        For example, ``unique(input=tensor_x, dim=0)`` is equivalent to ``unique(x=tensor_x, axis=0)``.
-
     Args:
         x(Tensor): The input tensor, it's data type should be float32, float64, int32, int64.
             alias: ``input``.
@@ -4141,6 +4162,7 @@ def unsqueeze(
         return out
 
 
+@param_two_alias(["x", "input"], ["axis", "dim"])
 @inplace_apis_in_dygraph_only
 def unsqueeze_(
     x: Tensor, axis: int | Sequence[int] | Tensor, name: str | None = None
@@ -4961,13 +4983,36 @@ def chunk(
     return split(x, num_or_sections=chunks, axis=axis, name=name)
 
 
-@param_two_alias(["x", "input"], ["repeat_times", "dims"])
+@overload
+def tile(
+    x: Tensor,
+    repeat_times: TensorOrTensors | Sequence[int],
+    name: str | None = None,
+) -> Tensor: ...
+
+
+@overload
+def tile(
+    input: Tensor,
+    *dims: int,
+) -> Tensor: ...
+
+
+@tile_decorator()
 def tile(
     x: Tensor,
     repeat_times: TensorOrTensors | Sequence[int],
     name: str | None = None,
 ) -> Tensor:
     """
+    This API has two signatures:
+
+    1. ``paddle.tile(x, repeat_times, name=None)`` (Paddle-style):
+        Construct a new Tensor by repeating ``x`` based on ``repeat_times``.
+
+    2. ``paddle.Tensor.tile(*dims)`` (PyTorch-style Tensor method):
+        Construct a new Tensor by repeating ``x`` based on variadic repeat
+        arguments.
 
     Construct a new Tensor by repeating ``x`` the number of times given by ``repeat_times``.
     After tiling, the value of the i'th dimension of the output is equal to ``x.shape[i]*repeat_times[i]``.
@@ -4977,13 +5022,14 @@ def tile(
     .. note::
         Alias Support: The parameter name ``input`` can be used as an alias for ``x``, and ``dims`` can be used as an alias for ``repeat_times``.
         For example, ``tile(input=x, dims=repeat_times)`` is equivalent to ``tile(x=x, repeat_times=repeat_times)``.
+        PyTorch-style Tensor method calls such as ``x.tile(2, 3)`` are also supported.
 
     Args:
         x (Tensor): The input tensor, its data type should be bool, float16, float32, float64, int32, int64, complex64 or complex128.
-            alias: ``input``.
+            Alias: ``input``.
         repeat_times (list|tuple|Tensor): The number of repeating times. If repeat_times is a list or tuple, all its elements
             should be integers or 1-D Tensors with the data type int32. If repeat_times is a Tensor, it should be an 1-D Tensor with the data type int32.
-            alias: ``dims``.
+            Alias: ``dims``.
         name (str|None, optional): Name for the operation (optional, default is None). For more information, please refer to :ref:`api_guide_Name`.
 
     Returns:
@@ -5674,6 +5720,9 @@ def masked_scatter(
     )
     assert mask.dtype == paddle.bool
 
+    if paddle.is_compiled_with_cuda() and in_dynamic_or_pir_mode():
+        return _C_ops.masked_scatter(x, mask, value)
+
     zeros_like_x = paddle.zeros_like(x, dtype=int)
     mask = paddle.add(paddle.cast(mask, dtype="int"), zeros_like_x)
     mask_prefix = paddle.clip(mask.cumsum() - 1, min=0)
@@ -5695,10 +5744,15 @@ def masked_scatter_(
     Inplace version of ``masked_scatter`` API, the output Tensor will be inplaced with input ``x``.
     Please refer to :ref:`api_paddle_masked_scatter`.
     """
+    # make sure the dtype of x and value is the same
     assert x.dtype == value.dtype, (
         f'x and value must have the same dtype, but got x dtype is {x.dtype}, value dtype is {value.dtype}'
     )
     assert mask.dtype == paddle.bool
+
+    if paddle.is_compiled_with_cuda() and in_dynamic_or_pir_mode():
+        return _C_ops.masked_scatter_(x, mask, value)
+
     zeros_like_x = paddle.zeros_like(x, dtype=int)
     mask = paddle.add(paddle.cast(mask, dtype="int"), zeros_like_x)
     mask_prefix = paddle.clip(mask.cumsum() - 1, min=0)
@@ -6903,6 +6957,7 @@ def repeat_interleave(
     return out
 
 
+@param_one_alias(["x", "input"])
 def moveaxis(
     x: Tensor,
     source: int | Sequence[int],
@@ -6916,6 +6971,7 @@ def moveaxis(
 
     Args:
         x (Tensor): The input Tensor. It is a N-D Tensor of data types bool, int32, int64, float32, float64, complex64, complex128.
+            Alias: ``input``.
         source(int|tuple|list): ``source`` position of axis that will be moved. Each element must be unique and integer.
         destination(int|tuple|list): ``destination`` position of axis that has been moved. Each element must be unique and integer.
         name(str|None, optional): The default value is None.  Normally there is no need for user to set this
@@ -7510,6 +7566,15 @@ def put_along_axis(
             "`indices` and `arr` must have the same number of dimensions!"
         )
     axis = non_negative_axis(arr, axis)
+    # When indices is empty (numel == 0) there are no scatter operations to
+    # perform.  Return a copy of arr immediately to avoid passing a 0-size
+    # index tensor through the broadcast path, which would attempt an invalid
+    # expand (e.g. values dim 4 -> 0) and raise an error.
+    # Use `0 in indices.shape` instead of `indices.numel() == 0` because
+    # numel() returns a GPU tensor whose __bool__ triggers D2H sync,
+    # which is forbidden during CUDA Graph capture (error 906).
+    if 0 in indices.shape:
+        return paddle.assign(arr)
     if broadcast:
         if has_dynamic_shape(arr.shape) or has_dynamic_shape(indices.shape):
             arr_shape = paddle.shape(arr)
@@ -7629,6 +7694,8 @@ def put_along_axis_(
             "`indices` and `arr` must have the same number of dimensions!"
         )
     axis = non_negative_axis(arr, axis)
+    if 0 in indices.shape:
+        return arr
     if broadcast:
         broadcast_shape = infer_broadcast_shape(arr, indices, axis)
         values = (
@@ -7834,6 +7901,91 @@ def index_add_(
     """
     scaled_value = value * alpha if alpha != 1 else value
     return _C_ops.index_add_(x, index, scaled_value, axis)
+
+
+@inplace_apis_in_dygraph_only
+def index_copy_(
+    x: Tensor,
+    dim: int,
+    index: Tensor,
+    source: Tensor,
+) -> Tensor:
+    """
+    Copies the elements of source tensor into the input tensor by selecting the indices in the order given in index.
+    """
+    if x.ndim == 0:
+        if dim not in (-1, 0):
+            raise IndexError(
+                f"Dimension out of range (expected to be in range of [-1, 0], but got {dim})"
+            )
+        dim = 0
+    else:
+        dim = non_negative_axis(x, dim)
+    if index.ndim >= 2:
+        raise IndexError("index_copy_(): index must be 0D or 1D")
+    if convert_dtype(index.dtype) != 'int64':
+        raise RuntimeError("index_copy_(): index must be int64")
+    if x.dtype != source.dtype:
+        raise RuntimeError(
+            "index_copy_(): self and source must have same dtype"
+        )
+    num_indices = index.numel().item()
+    if num_indices != 0:
+        dim_size = x.shape[dim] if x.ndim > 0 else 1
+        if ((index < 0) | (index >= dim_size)).any():
+            raise IndexError("index_copy_(): index out of bounds")
+
+    source_is_scalar = source.ndim == 0
+    if source_is_scalar:
+        if num_indices != 1:
+            raise IndexError("index_copy_(): scalar source requires one index")
+    elif source.ndim != x.ndim and x.ndim != 0:
+        raise IndexError("index_copy_(): source and self must have same rank")
+    elif num_indices != source.shape[dim]:
+        raise IndexError(
+            "index_copy_(): index length must match source size at dim"
+        )
+
+    if x.ndim == 0:
+        if num_indices == 0:
+            return x
+        if source_is_scalar:
+            source = source.reshape([1])
+        if x.place.is_xpu_place():
+            x.reshape_([1]).scatter_(index.reshape([num_indices]), source)
+            return x.reshape_([])
+        x.reshape_([1])[index.reshape([num_indices])] = source
+        return x.reshape_([])
+
+    x_sliced_shape = list(x.shape[:dim]) + list(x.shape[dim + 1 :])
+    source_sliced_shape = (
+        []
+        if source_is_scalar
+        else list(source.shape[:dim]) + list(source.shape[dim + 1 :])
+    )
+    if x_sliced_shape != source_sliced_shape:
+        raise RuntimeError(
+            "index_copy_(): source and destination slices must match"
+        )
+
+    if num_indices == 0:
+        return x
+    if source_is_scalar:
+        source = source.reshape([1])
+    if x.place.is_xpu_place():
+        index_shape = [1] * x.ndim
+        index_shape[dim] = num_indices
+        return put_along_axis_(
+            x,
+            index.reshape(index_shape),
+            source,
+            dim,
+            'assign',
+            include_self=True,
+            broadcast=True,
+        )
+    x[(builtins.slice(None),) * dim + (index,)] = source
+    return x
 
 
 @ParamAliasDecorator({"x": ["input"], "axis": ["dim"], "shape": ["sizes"]})
@@ -8178,16 +8330,19 @@ for name, func in __METHODS.items():
 
 
 def _index_fill_impl(
-    x: Tensor, index: Tensor, axis: int, value: Tensor, inplace: bool
+    x: Tensor,
+    index: Tensor,
+    axis: int,
+    value: bool | complex | Tensor,
+    inplace: bool,
 ) -> Tensor:
     if not isinstance(index, (Variable, paddle.pir.Value)):
         raise ValueError("index must be Tensor")
 
-    if not isinstance(value, Variable):
-        value = paddle.to_tensor(value, dtype=x.dtype)
-    else:
-        if len(value.shape) > 0:
+    if isinstance(value, (Variable, paddle.pir.Value)):
+        if value.numel() != 1:
             raise ValueError("value must be scalar or 0-D tensor")
+        value = value.item()
 
     x_dim = len(x.shape)
     if not (isinstance(axis, int)) or (axis > x_dim - 1) or axis < -x_dim:
@@ -8197,6 +8352,30 @@ def _index_fill_impl(
 
     if axis < 0:
         axis = axis + x_dim
+
+    if len(index.shape) != 1:
+        raise ValueError(
+            f"The index tensor must be 1-D, but received {len(index.shape)}-D."
+        )
+
+    if in_dynamic_mode() and (
+        paddle.is_compiled_with_cuda() or x.place.is_cpu_place()
+        if hasattr(x.place, 'is_cpu_place')
+        else True
+    ):
+        if 0 in index.shape:
+            return x if inplace else x.clone()
+
+        if inplace:
+            return _C_ops.index_fill_(x, index, axis, value)
+        else:
+            return _C_ops.index_fill(x, index, axis, value)
+
+    if not isinstance(value, Variable):
+        value = paddle.to_tensor(value, dtype=x.dtype)
+    else:
+        if len(value.shape) > 0:
+            raise ValueError("value must be scalar or 0-D tensor")
 
     perm = list(range(len(x.shape)))
     perm[0] = axis
@@ -8308,6 +8487,9 @@ def index_fill_(
     return _index_fill_impl(x, index, axis, value, True)
 
 
+@ParamAliasDecorator(
+    {"x": ["input"], "y": ["src"], "axis1": ["dim1"], "axis2": ["dim2"]}
+)
 def diagonal_scatter(
     x: Tensor,
     y: Tensor,
@@ -8339,10 +8521,14 @@ def diagonal_scatter(
 
     Args:
         x (Tensor): ``x`` is the original Tensor. Must be at least 2-dimensional.
-        y (Tensor): ``y`` is the Tensor to embed into ``x``
+            Alias: ``input``.
+        y (Tensor): ``y`` is the Tensor to embed into ``x``.
+            Alias: ``src``.
         offset (int, optional): which diagonal to consider. Default: 0 (main diagonal).
         axis1 (int, optional): first axis with respect to which to take diagonal. Default: 0.
+            Alias: ``dim1``.
         axis2 (int, optional): second axis with respect to which to take diagonal. Default: 1.
+            Alias: ``dim2``.
         name (str|None, optional): Name for the operation (optional, default is None). For more information, please refer to :ref:`api_guide_Name`.
 
     Returns:
@@ -8364,6 +8550,13 @@ def diagonal_scatter(
     return fill_diagonal_tensor(x, y, offset, axis1, axis2, name)
 
 
+@ParamAliasDecorator(
+    {
+        "x": ["input"],
+        "values": ["src"],
+        "axis": ["dim"],
+    }
+)
 def select_scatter(
     x: Tensor, values: Tensor, axis: int, index: int, name: str | None = None
 ) -> Tensor:
@@ -8371,9 +8564,9 @@ def select_scatter(
     Embeds the values of the values tensor into x at the given index of axis.
 
     Args:
-        x (Tensor) : The Destination Tensor. Supported data types are `bool`, `float16`, `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `bfloat16`, `complex64`, `complex128`.
-        values (Tensor) : The tensor to embed into x. Supported data types are `bool`, `float16`, `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `bfloat16`, `complex64`, `complex128`.
-        axis (int) : the dimension to insert the slice into.
+        x (Tensor) : The Destination Tensor. Supported data types are `bool`, `float16`, `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `bfloat16`, `complex64`, `complex128`. Alias: ``input``.
+        values (Tensor) : The tensor to embed into x. Supported data types are `bool`, `float16`, `float32`, `float64`, `uint8`, `int8`, `int16`, `int32`, `int64`, `bfloat16`, `complex64`, `complex128`. Alias: ``src``.
+        axis (int) : the dimension to insert the slice into. Alias: ``dim``.
         index (int) : the index to select with.
         name (str|None, optional): Name for the operation (optional, default is None).
 

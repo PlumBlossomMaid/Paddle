@@ -20,19 +20,17 @@
 namespace phi {
 namespace fusion {
 
-namespace dynload = phi::dynload;
 template <typename T>
 using BatchNormParamType =
-    typename phi::backends::gpu::CudnnDataType<T>::BatchNormParamType;
+    typename backends::gpu::CudnnDataType<T>::BatchNormParamType;
 
 #if CUDNN_VERSION >= 8000
 
 template <typename T>
 struct BNStatsFinalizeArgs {
   BNStatsFinalizeArgs() {
-    dtype = phi::backends::gpu::CudnnDataType<T>::type;
-    param_dtype =
-        phi::backends::gpu::CudnnDataType<BatchNormParamType<T>>::type;
+    dtype = backends::gpu::CudnnDataType<T>::type;
+    param_dtype = backends::gpu::CudnnDataType<BatchNormParamType<T>>::type;
     format = CUDNN_TENSOR_NHWC;
   }
 
@@ -54,8 +52,8 @@ struct BNStatsFinalizeArgs {
   cudnnDataType_t param_dtype;
   cudnnTensorFormat_t format;
 
-  phi::backends::gpu::TensorDescriptor in_desc;
-  phi::backends::gpu::TensorDescriptor out_desc;
+  backends::gpu::TensorDescriptor in_desc;
+  backends::gpu::TensorDescriptor out_desc;
 };
 
 template <typename T>

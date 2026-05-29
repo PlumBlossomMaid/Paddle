@@ -14,6 +14,7 @@ limitations under the License. */
 
 #include "paddle/phi/infermeta/multiary.h"
 
+#include <limits>
 #include <vector>
 
 #include "glog/logging.h"
@@ -30,6 +31,7 @@ limitations under the License. */
 #include "paddle/phi/core/utils/data_type.h"
 #include "paddle/phi/infermeta/binary.h"
 #include "paddle/phi/infermeta/nullary.h"
+#include "paddle/phi/kernels/funcs/common_infer_shape_functions.h"
 #include "paddle/phi/kernels/funcs/common_shape.h"
 #include "paddle/phi/kernels/funcs/concat_funcs.h"
 
@@ -346,8 +348,8 @@ void AdamwInferMeta(const MetaTensor& param,
                     const Scalar& beta1,
                     const Scalar& beta2,
                     const Scalar& epsilon,
-                    float lr_ratio,
-                    float coeff,
+                    double lr_ratio,
+                    double coeff,
                     bool with_decay,
                     bool lazy_mode,
                     int64_t min_row_size_to_use_multithread,
@@ -2322,7 +2324,7 @@ void Fp8GemmBlockwiseInferMeta(const MetaTensor& A,
       2,
       errors::InvalidArgument("Input B should have 2 dimensions"));
 
-  const auto IsFp8Dtype = [](const paddle::DataType dtype) {
+  const auto IsFp8Dtype = [](const DataType dtype) {
     return dtype == DataType::FLOAT8_E4M3FN || dtype == DataType::FLOAT8_E5M2;
   };
 
@@ -2848,11 +2850,12 @@ void FusionGroupInferMeta(const std::vector<const MetaTensor*>& ins,
   }
 
   for (size_t j = 0; j < num_outs; ++j) {
-    if (outs_dtype[j] == phi::TransToProtoVarType(DataType::FLOAT16)) {
+    DataType out_dtype = TransToPhiDataType(outs_dtype[j]);
+    if (out_dtype == DataType::FLOAT16) {
       outs[j]->set_dtype(DataType::FLOAT16);
-    } else if (outs_dtype[j] == phi::TransToProtoVarType(DataType::FLOAT32)) {
+    } else if (out_dtype == DataType::FLOAT32) {
       outs[j]->set_dtype(DataType::FLOAT32);
-    } else if (outs_dtype[j] == phi::TransToProtoVarType(DataType::FLOAT64)) {
+    } else if (out_dtype == DataType::FLOAT64) {
       outs[j]->set_dtype(DataType::FLOAT64);
     }
   }
@@ -3811,6 +3814,50 @@ void LegacyInterpolateInferMeta(
                        align_mode,
                        output,
                        config);
+}
+
+void IndexFillInferMeta(const MetaTensor& x,
+                        const MetaTensor& index,
+                        int dim,
+                        const Scalar& value,
+                        MetaTensor* out) {
+  auto in_dims = x.dims();
+  auto index_dims = index.dims();
+  int rank = in_dims.size();
+
+  PADDLE_ENFORCE_LT(
+      rank,
+      7,
+      common::errors::InvalidArgument(
+          "The rank of Input(X) should be less than 7, but received %d.",
+          rank));
+
+  if (dim < 0) {
+    dim += rank;
+  }
+
+  PADDLE_ENFORCE_GE(dim,
+                    0,
+                    common::errors::InvalidArgument(
+                        "The dim must be >= -%d and < %d, but received %d.",
+                        rank,
+                        rank,
+                        dim));
+  PADDLE_ENFORCE_LT(dim,
+                    rank,
+                    common::errors::InvalidArgument(
+                        "The dim must be >= -%d and < %d, but received %d.",
+                        rank,
+                        rank,
+                        dim));
+
+  PADDLE_ENFORCE_EQ(index_dims.size(),
+                    1,
+                    common::errors::InvalidArgument(
+                        "The index tensor must be 1-D, but received %d-D.",
+                        index_dims.size()));
+
+  out->share_meta(x);
 }
 
 void IndexPutInferMeta(const MetaTensor& x,
@@ -5697,6 +5744,34 @@ void WarpctcInferMeta(const MetaTensor& logits,
     max_sequence_length = logits_dims[0];
     num_sequences = logits_dims[1];
     sequence_width = logits_dims[2];
+
+    int64_t labels_batch_size = label.dims()[0];
+    int64_t logits_length_batch_size = logits_length.dims()[0];
+    int64_t labels_length_batch_size = labels_length.dims()[0];
+
+    PADDLE_ENFORCE_EQ(
+        labels_batch_size,
+        num_sequences,
+        common::errors::InvalidArgument(
+            "Expected label to have size %lld at dimension 0, but got size %d",
+            num_sequences,
+            labels_batch_size));
+
+    PADDLE_ENFORCE_EQ(
+        logits_length_batch_size,
+        num_sequences,
+        common::errors::InvalidArgument("Expected logits_length to have size "
+                                        "%lld at dimension 0, but got size %d",
+                                        num_sequences,
+                                        logits_length_batch_size));
+
+    PADDLE_ENFORCE_EQ(
+        labels_length_batch_size,
+        num_sequences,
+        common::errors::InvalidArgument("Expected labels_length to have size "
+                                        "%lld at dimension 0, but got size %d",
+                                        num_sequences,
+                                        labels_length_batch_size));
   } else {
     max_sequence_length = -1;
     num_sequences = -1;
@@ -6189,23 +6264,171 @@ void MoePermuteInferMeta(const MetaTensor& X,
                     true,
                     common::errors::InvalidArgument(
                         "Input expert_prob_topk's dtype should be FLOAT32"));
+  PADDLE_ENFORCE_EQ(
+      expert_routemap_topk.dims().size(),
+      2,
+      common::errors::InvalidArgument(
+          "Input expert_routemap_topk's dims should be 2, but got %u.",
+          expert_routemap_topk.dims().size()));
+  PADDLE_ENFORCE_EQ(
+      expert_prob_topk.dims().size(),
+      2,
+      common::errors::InvalidArgument(
+          "Input expert_prob_topk's dims should be 2, but got %u.",
+          expert_prob_topk.dims().size()));
   const int64_t rows = X.dims()[0];
   const int64_t cols = X.dims()[1];
-  int64_t output_rows = 0;
+  const int64_t topk = expert_routemap_topk.dims()[1];
+  const bool check_prob_shape =
+      !common::contain_unknown_dim(expert_routemap_topk.dims()) &&
+      !common::contain_unknown_dim(expert_prob_topk.dims());
+  if (check_prob_shape) {
+    PADDLE_ENFORCE_EQ(expert_prob_topk.dims(),
+                      expert_routemap_topk.dims(),
+                      common::errors::InvalidArgument(
+                          "Input expert_prob_topk's dims should be equal to "
+                          "expert_routemap_topk's dims, but got %s and %s.",
+                          expert_prob_topk.dims(),
+                          expert_routemap_topk.dims()));
+  }
+  const bool check_input_shape =
+      !common::contain_unknown_dim(X.dims()) &&
+      !common::contain_unknown_dim(expert_routemap_topk.dims());
+  if (check_input_shape) {
+    PADDLE_ENFORCE_EQ(
+        expert_routemap_topk.dims()[0],
+        rows,
+        common::errors::InvalidArgument(
+            "Input expert_routemap_topk's first dimension should be equal to "
+            "X.dims()[0], but got %ld and %ld.",
+            expert_routemap_topk.dims()[0],
+            rows));
+    PADDLE_ENFORCE_GE(
+        rows,
+        0,
+        common::errors::InvalidArgument(
+            "X.dims()[0] should be non-negative, but got %ld.", rows));
+    PADDLE_ENFORCE_LE(
+        rows,
+        static_cast<int64_t>(std::numeric_limits<int32_t>::max()) - 32,
+        common::errors::InvalidArgument(
+            "X.dims()[0] should be <= INT_MAX - 32, but got %ld.", rows));
+    PADDLE_ENFORCE_GE(
+        cols,
+        0,
+        common::errors::InvalidArgument(
+            "X.dims()[1] should be non-negative, but got %ld.", cols));
+    PADDLE_ENFORCE_LE(
+        cols,
+        static_cast<int64_t>(std::numeric_limits<int32_t>::max()),
+        common::errors::InvalidArgument(
+            "X.dims()[1] should be <= INT_MAX, but got %ld.", cols));
+    PADDLE_ENFORCE_GE(topk,
+                      1,
+                      common::errors::InvalidArgument(
+                          "topk should be greater than 0, but got %ld.", topk));
+    PADDLE_ENFORCE_LE(topk,
+                      16,
+                      common::errors::InvalidArgument(
+                          "topk should be <= 16, but got %ld.", topk));
+  }
+  PADDLE_ENFORCE_GE(
+      padding_alignment,
+      1,
+      common::errors::InvalidArgument(
+          "padding_alignment should be greater than 0, but got %d.",
+          padding_alignment));
+  PADDLE_ENFORCE_GE(
+      override_buffer_size,
+      -1,
+      common::errors::InvalidArgument(
+          "override_buffer_size should be -1 or non-negative, but got %d.",
+          override_buffer_size));
+  PADDLE_ENFORCE_GE(
+      num_experts,
+      1,
+      common::errors::InvalidArgument(
+          "num_experts should be greater than 0, but got %d.", num_experts));
+  PADDLE_ENFORCE_LE(
+      num_experts,
+      384,
+      common::errors::InvalidArgument(
+          "num_experts should be <= 384, but got %d.", num_experts));
+  if (check_input_shape) {
+    PADDLE_ENFORCE_LE(
+        rows,
+        static_cast<int64_t>(std::numeric_limits<int32_t>::max()) /
+            static_cast<int64_t>(num_experts),
+        common::errors::InvalidArgument(
+            "X.dims()[0] * num_experts should be <= INT_MAX, but got %ld * %d.",
+            rows,
+            num_experts));
+    PADDLE_ENFORCE_LE(
+        rows,
+        static_cast<int64_t>(std::numeric_limits<int32_t>::max()) / topk,
+        common::errors::InvalidArgument(
+            "X.dims()[0] * topk should be <= INT_MAX, but got %ld * %ld.",
+            rows,
+            topk));
+  }
 
-  // Using -1 as default value for not overriding buffer size,
-  // which also means that tokens_per_expert(CPU) is valid
-  // and will be used to calculate the output_rows.
-  if (override_buffer_size != -1) {
+  int64_t output_rows = 0;
+  const bool is_buffer_overridden = override_buffer_size >= 0;
+  if (is_buffer_overridden) {
     output_rows = override_buffer_size;
   } else {
+    PADDLE_ENFORCE_EQ(
+        tokens_per_expert.size(),
+        static_cast<size_t>(num_experts),
+        common::errors::InvalidArgument(
+            "tokens_per_expert's size should be equal to num_experts, but got "
+            "%zu and %d.",
+            tokens_per_expert.size(),
+            num_experts));
     for (int i = 0; i < num_experts; ++i) {
       const int64_t tokens = tokens_per_expert[i];
+      PADDLE_ENFORCE_GE(
+          tokens,
+          0,
+          common::errors::InvalidArgument(
+              "tokens_per_expert should be non-negative, but got %ld at "
+              "index %d.",
+              tokens,
+              i));
       output_rows += ((tokens + padding_alignment - 1) / padding_alignment) *
                      padding_alignment;
     }
   }
+  PADDLE_ENFORCE_LE(
+      output_rows,
+      static_cast<int64_t>(std::numeric_limits<int32_t>::max()),
+      common::errors::InvalidArgument(
+          "The output rows of moe_permute should be <= INT_MAX, but got %ld.",
+          output_rows));
+  if (X.dtype() == DataType::FLOAT8_E4M3FN && do_gather) {
+    PADDLE_ENFORCE_EQ(XScale.initialized(),
+                      true,
+                      common::errors::InvalidArgument(
+                          "Input XScale should not be None when X's dtype is "
+                          "FLOAT8_E4M3FN and do_gather is True."));
+  }
   if (XScale && do_gather) {
+    PADDLE_ENFORCE_EQ(XScale.dims().size(),
+                      2,
+                      common::errors::InvalidArgument(
+                          "Input XScale's dims should be 2, but got %u.",
+                          XScale.dims().size()));
+    if (!common::contain_unknown_dim(XScale.dims()) &&
+        !common::contain_unknown_dim(X.dims())) {
+      PADDLE_ENFORCE_EQ(
+          XScale.dims()[0],
+          rows,
+          common::errors::InvalidArgument(
+              "Input XScale's first dimension should be equal to X.dims()[0], "
+              "but got %ld and %ld.",
+              XScale.dims()[0],
+              rows));
+    }
     if (using_ue8m0_scale) {
       PADDLE_ENFORCE_EQ(XScale.dtype(),
                         DataType::INT32,
@@ -6219,6 +6442,22 @@ void MoePermuteInferMeta(const MetaTensor& X,
                             "Input XScale's dtype should be FLOAT32"));
     }
     const int64_t quanted_cols = XScale.dims()[1];
+    if (!common::contain_unknown_dim(XScale.dims())) {
+      PADDLE_ENFORCE_GE(
+          quanted_cols,
+          0,
+          common::errors::InvalidArgument(
+              "Input XScale's second dimension should be non-negative, but got "
+              "%ld.",
+              quanted_cols));
+      PADDLE_ENFORCE_LE(
+          quanted_cols,
+          static_cast<int64_t>(std::numeric_limits<int32_t>::max()),
+          common::errors::InvalidArgument(
+              "Input XScale's second dimension should be <= INT_MAX, but got "
+              "%ld.",
+              quanted_cols));
+    }
     XScale_unzipped->set_dims({output_rows, quanted_cols});
     XScale_unzipped->set_dtype(XScale.dtype());
   } else {
@@ -6268,8 +6507,89 @@ void MoeUnpermuteInferMeta(const MetaTensor& unzipped_tokens,
       true,
       common::errors::InvalidArgument(
           "Input unzipped_token_probs's dtype should be FLOAT32"));
+  PADDLE_ENFORCE_EQ(unzipped_tokens.dims().size(),
+                    2,
+                    common::errors::InvalidArgument(
+                        "Input unzipped_tokens's dims should be 2, but got %u.",
+                        unzipped_tokens.dims().size()));
+  PADDLE_ENFORCE_EQ(
+      zipped_expertwise_rowmap.dims().size(),
+      2,
+      common::errors::InvalidArgument(
+          "Input zipped_expertwise_rowmap's dims should be 2, but got %u.",
+          zipped_expertwise_rowmap.dims().size()));
+  PADDLE_ENFORCE_EQ(
+      expert_routemap_topk.dims().size(),
+      2,
+      common::errors::InvalidArgument(
+          "Input expert_routemap_topk's dims should be 2, but got %u.",
+          expert_routemap_topk.dims().size()));
+  PADDLE_ENFORCE_GE(
+      total_zipped_tokens_num,
+      0,
+      common::errors::InvalidArgument(
+          "total_zipped_tokens_num should be non-negative, but got %d.",
+          total_zipped_tokens_num));
+  PADDLE_ENFORCE_GE(
+      num_experts,
+      1,
+      common::errors::InvalidArgument(
+          "num_experts should be greater than 0, but got %d.", num_experts));
+  PADDLE_ENFORCE_LE(
+      num_experts,
+      384,
+      common::errors::InvalidArgument(
+          "num_experts should be <= 384, but got %d.", num_experts));
+  if (!common::contain_unknown_dim(zipped_expertwise_rowmap.dims())) {
+    PADDLE_ENFORCE_EQ(zipped_expertwise_rowmap.dims()[0],
+                      total_zipped_tokens_num,
+                      common::errors::InvalidArgument(
+                          "Input zipped_expertwise_rowmap's first dimension "
+                          "should be equal to "
+                          "total_zipped_tokens_num, but got %ld and %d.",
+                          zipped_expertwise_rowmap.dims()[0],
+                          total_zipped_tokens_num));
+    PADDLE_ENFORCE_EQ(
+        zipped_expertwise_rowmap.dims()[1],
+        num_experts,
+        common::errors::InvalidArgument("Input zipped_expertwise_rowmap's "
+                                        "second dimension should be equal to "
+                                        "num_experts, but got %ld and %d.",
+                                        zipped_expertwise_rowmap.dims()[1],
+                                        num_experts));
+  }
+  if (!common::contain_unknown_dim(expert_routemap_topk.dims())) {
+    PADDLE_ENFORCE_EQ(
+        expert_routemap_topk.dims()[0],
+        total_zipped_tokens_num,
+        common::errors::InvalidArgument(
+            "Input expert_routemap_topk's first dimension should be equal to "
+            "total_zipped_tokens_num, but got %ld and %d.",
+            expert_routemap_topk.dims()[0],
+            total_zipped_tokens_num));
+  }
   const int64_t cols = unzipped_tokens.dims()[1];
   const int64_t topk = expert_routemap_topk.dims()[1];
+  if (!common::contain_unknown_dim(unzipped_tokens.dims())) {
+    PADDLE_ENFORCE_GE(cols,
+                      0,
+                      common::errors::InvalidArgument(
+                          "unzipped_tokens.dims()[1] should be non-negative, "
+                          "but got %ld.",
+                          cols));
+  }
+  if (!common::contain_unknown_dim(expert_routemap_topk.dims())) {
+    PADDLE_ENFORCE_GE(topk,
+                      1,
+                      common::errors::InvalidArgument(
+                          "topk should be greater than 0, but got %ld.", topk));
+  }
+  PADDLE_ENFORCE_LE(
+      static_cast<int64_t>(total_zipped_tokens_num),
+      static_cast<int64_t>(std::numeric_limits<int32_t>::max()),
+      common::errors::InvalidArgument(
+          "total_zipped_tokens_num should be <= INT_MAX, but got %d.",
+          total_zipped_tokens_num));
   zipped_tokens->set_dims({total_zipped_tokens_num, cols});
   zipped_tokens->set_dtype(unzipped_tokens.dtype());
   zipped_probs_topk->set_dims({total_zipped_tokens_num, topk});
@@ -6393,6 +6713,17 @@ void MultiheadMatmulInferMeta(const MetaTensor& input,
   out->set_dims(input.dims());
   out->set_dtype(input.dtype());
   out->share_lod(input);
+}
+
+void MaskedScatterInferMeta(const MetaTensor& x,
+                            const MetaTensor& mask,
+                            const MetaTensor& value,
+                            MetaTensor* out) {
+  auto x_dims = x.dims();
+  auto mask_dims = mask.dims();
+  auto expanded_dims = funcs::BroadcastTwoDims(x_dims, mask_dims, -1);
+  out->set_dims(expanded_dims);
+  out->set_dtype(x.dtype());
 }
 
 void MaskedMultiheadAttentionInferMeta(const MetaTensor& x,

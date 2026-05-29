@@ -232,7 +232,7 @@ void FusedMultiTransformerOpKernel(
   auto *rotary_tensor = rotary_tensor_in.get_ptr();
 
   // 3. fmha
-  phi::fusion::AttnDropoutParam attn_param(
+  fusion::AttnDropoutParam attn_param(
       true, "upscale_in_train", 0.0, true, true, 0, nullptr);
 
   auto *src_mask = src_mask_in.get_ptr();
@@ -327,7 +327,7 @@ void FusedMultiTransformerOpKernel(
   DenseTensor pre_cache_kv_out;
   if (cache_offset > 0) {
     pre_cache_kv_out.Resize(
-        {{2, bsz, num_head, seq_len + cache_offset, dim_head}});
+        {2, bsz, num_head, seq_len + cache_offset, dim_head});
     auto *pre_cache_kv_out_data = dev_ctx.template Alloc<T>(
         &pre_cache_kv_out, pre_cache_kv_out.numel() * sizeof(T));
   }
@@ -416,9 +416,8 @@ void FusedMultiTransformerOpKernel(
   char *mixgemm_workspace_data = nullptr;
 
   // 7. ffn act + bias
-  phi::fusion::DropoutParam ffn1_dropout_param(
-      true, 0, true, true, 0.0, nullptr, 0);
-  phi::fusion::FusedDropoutHelper<T, int8_t> fused_act_dropout_helper(
+  fusion::DropoutParam ffn1_dropout_param(true, 0, true, true, 0.0, nullptr, 0);
+  fusion::FusedDropoutHelper<T, int8_t> fused_act_dropout_helper(
       dev_ctx, token_num, dim_ffn, ffn1_dropout_param);
   DenseTensor ffn1_dropout_out, ffn1_dropout_mask;
   int tmp_dim_ffn = dim_ffn;
@@ -439,11 +438,9 @@ void FusedMultiTransformerOpKernel(
       dev_ctx, token_num, dim_embed, tmp_dim_ffn, "None", false);
 
   // 9. ffn2 residual bias
-  phi::fusion::DropoutParam ffn2_dropout_param(
-      true, 0, true, true, 0.0, nullptr, 0);
-  phi::fusion::FusedDropoutLayerNormHelper<T, uint8_t>
-      ffn2_fused_dropout_helper(
-          dev_ctx, token_num, dim_embed, ffn2_dropout_param, epsilon);
+  fusion::DropoutParam ffn2_dropout_param(true, 0, true, true, 0.0, nullptr, 0);
+  fusion::FusedDropoutLayerNormHelper<T, uint8_t> ffn2_fused_dropout_helper(
+      dev_ctx, token_num, dim_embed, ffn2_dropout_param, epsilon);
 
   DenseTensor tmp_out, tmp_out_rm_padding;
   tmp_out.Resize({token_num, dim_embed});

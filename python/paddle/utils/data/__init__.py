@@ -22,9 +22,12 @@ from .dataset import (
     Dataset,
     IterableDataset,
     Subset,
+    TensorDataset,
     random_split,
 )
 from .sampler import (
+    BatchSampler,
+    RandomSampler,
     Sampler,
     SequentialSampler,
 )
@@ -38,6 +41,9 @@ __all__ = [
     'IterableDataset',
     'Subset',
     'random_split',
+    'BatchSampler',
+    'RandomSampler',
     'Sampler',
     'SequentialSampler',
+    'TensorDataset',
 ]
